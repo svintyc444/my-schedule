@@ -1,138 +1,97 @@
-import datetime
-import re
-import requests
-from bs4 import BeautifulSoup
+import datetime import re import requests from bs4 import BeautifulSoup
+Базовый URL для вашей группы
+BASE_URL = "https://rasp.unecon.ru/raspisanie_grp.php?g=14100"
+Официальная сетка пар СПбГЭУ
+BELL_SCHEDULE = { 1: ("09:00", "10:35"), 2: ("10:45", "12:20"), 3: ("13:00", "14:35"), 4: ("14:45", "16:20"), 5: ("16:30", "18:05"), 6: ("18:15", "19:50"), 7: ("20:00", "21:35"), }
+HEADERS = { "User-Agent": ( "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" ) }
+def parse_week(url): response = requests.get(url, headers=HEADERS) response.encoding = "utf-8" soup = BeautifulSoup(response.text, "html.parser")
+events = []
+current_date = None
 
-# URL расписания вашей группы
-URL = "https://rasp.unecon.ru/raspisanie_grp.php?g=14100"
+# Поиск по всем строкам таблицы расписания
+rows = soup.find_all("tr")
 
-# Стандартная сетка пар СПбГЭУ
-BELL_SCHEDULE = {
-    1: ("09:00", "10:35"),
-    2: ("10:50", "12:25"),
-    3: ("12:40", "14:15"),
-    4: ("14:30", "16:00"),
-    5: ("16:10", "17:40"),
-    6: ("18:30", "20:00"),
-    7: ("20:10", "21:40"),
-}
+for row in rows:
+    text = row.get_text(separator=" ", strip=True)
+    if not text:
+        continue
 
+    # Поиск даты дня (например: "21.10.2024" или "Понедельник, 21.10")
+    date_match = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", text)
+    if date_match:
+        d, m, y = date_match.groups()
+        current_date = f"{y}{m}{d}"
 
-def parse_schedule():
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-    response = requests.get(URL, headers=headers)
-    response.encoding = "utf-8"
-    soup = BeautifulSoup(response.text, "html.parser")
+    if not current_date:
+        continue
 
-    events = []
-    current_date = None
+    # Извлечение времени или номера пары
+    time_match = re.search(r"(\d{1,2}:\d{2})\s*[-—–]\s*(\d{1,2}:\d{2})", text)
+    start_time_str = None
+    end_time_str = None
 
-    # Таблица расписания в СПбГЭУ строится построчно
-    # Дни недели обычно идут заголовками или отдельными строками
-    rows = soup.find_all(["tr", "div", "li"])
-
-    for row in rows:
-        text = row.get_text(separator=" ", strip=True)
-
-        # 1. Поиск даты (форматы: "ДД.ММ.ГГГГ" или "Понедельник, 15 октября")
-        date_match = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", text)
-        if date_match and ("день" in text.lower() or len(text) < 40):
-            day, month, year = date_match.groups()
-            current_date = f"{year}{month}{day}"
-            continue
-
-        if not current_date:
-            continue
-
-        # 2. Определение номера пары (1-7) или времени
-        pair_num = None
-        time_match = re.search(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", text)
-        pair_match = re.search(r"^(\d)\s*пара|\b(\d)\s*п\b", text, re.IGNORECASE)
-
-        start_time_str = None
-        end_time_str = None
-
-        if time_match:
-            sh, sm, eh, em = time_match.groups()
-            start_time_str = f"{int(sh):02d}{sm}00"
-            end_time_str = f"{int(eh):02d}{em}00"
-        elif pair_match:
-            pair_num = int(pair_match.group(1) or pair_match.group(2))
-            if pair_num in BELL_SCHEDULE:
-                s, e = BELL_SCHEDULE[pair_num]
+    if time_match:
+        sh, eh = time_match.groups()
+        start_time_str = sh.replace(":", "").zfill(4) + "00"
+        end_time_str = eh.replace(":", "").zfill(4) + "00"
+    else:
+        # Проверка по номеру пары в начале строки
+        pair_match = re.search(r"^(\d)\s*пара", text, re.IGNORECASE)
+        if pair_match:
+            p_num = int(pair_match.group(1))
+            if p_num in BELL_SCHEDULE:
+                s, e = BELL_SCHEDULE[p_num]
                 start_time_str = s.replace(":", "") + "00"
                 end_time_str = e.replace(":", "") + "00"
 
-        # Если нашли предмет и строку с парой
-        if start_time_str and ("лек" in text.lower() or "прак" in text.lower() or "ауд" in text.lower() or len(text) > 15):
-            # Извлекаем аудиторию (обычно после слова "ауд." или трех-четырехзначное число)
-            room_match = re.search(r"(?:ауд\.?|каб\.?)\s*([\w\d\-\/]+)", text, re.IGNORECASE)
-            room = room_match.group(1) if room_match else "Уточняется"
+    # Если в строке обнаружена пара
+    cols = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+    if start_time_str and len(cols) >= 2:
+        row_content = " ".join(cols[1:])
+        if len(row_content) < 5 or "нет пар" in row_content.lower():
+            continue
 
-            # Очищаем название дисциплины
-            clean_text = re.sub(r"\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}", "", text)
-            clean_text = re.sub(r"(?:ауд\.?|каб\.?)\s*[\w\d\-\/]+", "", clean_text, flags=re.IGNORECASE)
-            summary = " ".join(clean_text.split()[:7])  # Компактный заголовок
+        # Поиск аудитории
+        room_match = re.search(r"(?:ауд\.?|каб\.?)\s*([\w\d\-\/]+)", row_content, re.IGNORECASE)
+        room = room_match.group(1) if room_match else "Не указана"
 
-            events.append({
-                "summary": summary,
-                "location": f"ауд. {room}",
-                "description": text,
-                "date": current_date,
-                "start_time": start_time_str,
-                "end_time": end_time_str,
-            })
+        # Очистка названия предмета для заголовка
+        title_clean = re.sub(r"(?:ауд\.?|каб\.?)\s*[\w\d\-\/]+", "", row_content, flags=re.IGNORECASE)
+        summary = " ".join(title_clean.split()[:6])
 
-    return events
+        events.append({
+            "summary": summary,
+            "location": f"ауд. {room}",
+            "description": row_content,
+            "date": current_date,
+            "start_time": start_time_str,
+            "end_time": end_time_str,
+        })
 
+return events
+def generate_ics(events): now_stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") lines = [ "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//UNECON Schedule Sync//RU", "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:Расписание СПбГЭУ", "X-WR-TIMEZONE:Europe/Moscow", ]
+for idx, ev in enumerate(events):
+    dtstart = f"{ev['date']}T{ev['start_time']}"
+    dtend = f"{ev['date']}T{ev['end_time']}"
 
-def generate_ics(events):
-    now_stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//UNECON Schedule Sync//RU",
-        "CALSCALE:GREGORIAN",
-        "METHOD:PUBLISH",
-        "X-WR-CALNAME:Расписание СПбГЭУ",
-        "X-WR-TIMEZONE:Europe/Moscow",
-    ]
+    lines.extend([
+        "BEGIN:VEVENT",
+        f"UID:unecon-{ev['date']}-{ev['start_time']}-{idx}@schedule",
+        f"DTSTAMP:{now_stamp}",
+        f"DTSTART;TZID=Europe/Moscow:{dtstart}",
+        f"DTEND;TZID=Europe/Moscow:{dtend}",
+        f"SUMMARY:{ev['summary']}",
+        f"LOCATION:{ev['location']}",
+        f"DESCRIPTION:{ev['description']}",
+        "STATUS:CONFIRMED",
+        "END:VEVENT",
+    ])
 
-    for idx, ev in enumerate(events):
-        dtstart = f"{ev['date']}T{ev['start_time']}"
-        dtend = f"{ev['date']}T{ev['end_time']}"
-
-        lines.extend([
-            "BEGIN:VEVENT",
-            f"UID:unecon-{ev['date']}-{ev['start_time']}-{idx}@schedule",
-            f"DTSTAMP:{now_stamp}",
-            f"DTSTART;TZID=Europe/Moscow:{dtstart}",
-            f"DTEND;TZID=Europe/Moscow:{dtend}",
-            f"SUMMARY:{ev['summary']}",
-            f"LOCATION:{ev['location']}",
-            f"DESCRIPTION:{ev['description']}",
-            "STATUS:CONFIRMED",
-            "END:VEVENT",
-        ])
-
-    lines.append("END:VCALENDAR")
-    return "\r\n".join(lines)
-
-
-if __name__ == "__main__":
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-    r = requests.get(URL, headers=headers)
-    print("STATUS CODE:", r.status_code)
-    print("PAGE TITLE:", BeautifulSoup(r.text, "html.parser").title.text if BeautifulSoup(r.text, "html.parser").title else "No title")
-    print("HTML PREVIEW:")
-    print(r.text[:2000])  # выведет первые 2000 символов страницы
+lines.append("END:VCALENDAR")
+return "\r\n".join(lines)
+if name == "main": # Парсим указанную неделю (w=9) и при необходимости соседние target_url = "https://rasp.unecon.ru/raspisanie_grp.php?g=14100&w=9" parsed = parse_week(target_url)
+ics = generate_ics(parsed)
+with open("schedule.ics", "w", encoding="utf-8") as f:
+    f.write(ics)
+    
+print(f"Готово! Добавлено занятий: {len(parsed)}")
