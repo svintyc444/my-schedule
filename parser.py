@@ -125,8 +125,14 @@ def generate_ics(events):
 
 
 if __name__ == "__main__":
-    parsed = parse_schedule()
-    ics = generate_ics(parsed)
-    with open("schedule.ics", "w", encoding="utf-8") as f:
-        f.write(ics)
-    print(f"Готово! Добавлено занятий: {len(parsed)}")
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    r = requests.get(URL, headers=headers)
+    print("STATUS CODE:", r.status_code)
+    print("PAGE TITLE:", BeautifulSoup(r.text, "html.parser").title.text if BeautifulSoup(r.text, "html.parser").title else "No title")
+    print("HTML PREVIEW:")
+    print(r.text[:2000])  # выведет первые 2000 символов страницы
